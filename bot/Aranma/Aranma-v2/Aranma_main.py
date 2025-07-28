@@ -20,11 +20,12 @@ server_info = [os.getenv("HOST"),os.getenv("PASS"),os.getenv("PORT")]
 myserver_ids = [int(os.getenv("V_SERVER_ID")),int(os.getenv("D_SERVER_ID"))]
 
 # dev id (niki & kazuki)
-dev_user_id = [int(os.getenv("USER1_ID")),int(os.getenv("USER2_ID"))]
+dev_user_id = [int(os.getenv("NIKI_ID")),int(os.getenv("KAZUKI_ID"))]
 
 # set AI model
 async_loop = asyncio.get_event_loop()
 generator = async_loop.run_until_complete(amod.set_generator())
+generator.model.config.seed = None
 
 # bot setup
 intents = amod.set_intents(discord.Intents.default())
@@ -35,6 +36,7 @@ tree = dac.CommandTree(bot)
 rdch = {} # read channel
 joch = {} # join channel
 vccl = {} # VC Client
+gque = {} # guild queue
 
 # failed mesage
 failed = 'このコマンドの実行権限がありません'
@@ -88,9 +90,9 @@ async def ggrks(ctx: discord.Interaction,seed: str,x: int,z: int):
 @tree.command(name='reqjoin',description='マイクラ鯖への参加申請')
 async def reqjoin(ctx: discord.Interaction,mcid: str):
     if ctx.guild_id in myserver_ids:
-        dev_id = await bot.fetch_user(dev_user_id)
+        dev_id = await bot.fetch_user(dev_user_id[0])
         amod.addcsv(mcid)
-        await dev_id.send(f'新しい参加申請を request.csv に追加しました\nServer name:{ctx.user.display_name}\nmcid:{mcid}')
+        await dev_id.send(f'New join request add request.csv\nServer name:{ctx.user.display_name}\nmcid:{mcid}')
         await ctx.response.send_message(f'mcid:{mcid}で申請しました。')
     else:
         await ctx.response.send_message(failed)
@@ -231,6 +233,14 @@ async def mikuji(ctx: discord.Interaction):
     result = amod.get_mikuji()
     await ctx.response.send_message(f'ナラ{ctx.user.display_name}の今日の運勢は{result}だ')
 
+@tree.command(name='freedice',description='自由なダイス(MAX 30D100まで)')
+async def free_dice(ctx: discord.Interaction, dice: int, roll: int):
+    if dice > 30 or roll > 100:
+        await ctx.response.send_message('指定範囲外のダイスはダメだぞ')
+    else:
+        result = amod.dice_roll(dice,roll)
+        await ctx.response.send_message(f'{dice}D{roll}の結果\n{result}')
+
 #-------------
 #ai commands
 #-------------
@@ -241,9 +251,24 @@ async def omikujineo(ctx: discord.Interaction):
     user_name = ctx.user.display_name
     color_list = [[128,0,128],[25,25,112],[230,230,250],[255,215,0],[192,192,192],[80,200,120],[75,0,130]]
     choice_color = amod.dice_roll(1,7)[0] - 1
+    gen_fortune:str = await amod.generate_mikuji(fortune,generator)
+    gen_fortune = gen_fortune.replace(f"「{fortune}」",f'「||{fortune}||」')
     emb = discord.Embed(title='アランマの~~よく当たる~~カオスな占い☆',description=f'ナラ{user_name}の今日の運勢を占う',color=discord.Colour.from_rgb(color_list[choice_color][0],color_list[choice_color][1],color_list[choice_color][2]))
-    emb.add_field(name=f'ナラ{user_name}の占い結果',value= f'今日の運勢は「||{fortune}||」だ！ラッキーカラーは{await amod.generate_mikuji(fortune,generator)}')
+    emb.add_field(name=f'ナラ{user_name}の占い結果',value= gen_fortune)
     await ctx.followup.send(embed = emb)
+
+#------------------
+# secret commands
+#------------------
+@tree.command(name='whotel',description='電話番号を調べます(コマンド使用者にしか見えないようになっています)')
+async def who_tel(ctx: discord.Interaction, tel: str):
+    url = f'https://www.telnavi.jp/phone/{tel}'
+    await ctx.response.send_message(f'電話番号:{tel}\n{url}',ephemeral=True)
+
+@tree.command(name='getid',description='ベータ参加時に必要なDiscord IDを取得します')
+async def get_dis_user_id(ctx: discord.Interaction):
+    await ctx.response.send_message(f'{ctx.user.display_name}のIDは\n```\n{ctx.user.id}```\n',ephemeral=True)
+
 
 #--------------
 #admin commands
@@ -292,12 +317,38 @@ async def opereq(ctx:discord.Interaction, target: int, permit: bool):
     else:
         await ctx.response.send_message(failed)
 
-@tree.command(name='stopbot',description='BOTを終了します(再起動)')
+@tree.command(name='stopbot',description='aranmabot will stop')
 @dac.default_permissions(administrator=True)
 async def stopbot(ctx: discord.Interaction):
     if ctx.user.id in dev_user_id:
-        await ctx.response.send_message("アランマbotを停止します")
-        await bot.close()
+        result = amod.clear_voices()
+        if result == 0:
+            await ctx.response.send_message("アランマbotを停止します")
+            await bot.close()
+        else:
+            await ctx.response.send_message(f"エラーがおきました\n{result}")
+    else:
+        await ctx.response.send_message(failed)
+
+@tree.command(name='addbadwords',description='bad-word add to list')
+@dac.default_permissions(administrator=True)
+async def add_bad(ctx: discord.Interaction,bad_word: str):
+    if ctx.user.id in dev_user_id:
+        amod.bads_add_to_json([bad_word])
+        await ctx.response.send_message(f'\"{bad_word}\"を追加しました')
+    else:
+        await ctx.response.send_message(failed)
+
+@tree.command(name='delvoices',description='delete voices(admin)')
+@dac.default_permissions(administrator=True)
+async def delvoices(ctx: discord.Interaction):
+    if ctx.user.id in dev_user_id:
+        result = amod.clear_voices()
+        if result == 0 or result == 1:
+            text = ['wavのファイルを全て削除しました','ファイルがありません']
+            await ctx.response.send_message(text[result])
+        else:
+            await ctx.response.send_message(f"エラーがおきました\n{result}")
     else:
         await ctx.response.send_message(failed)
 
@@ -311,17 +362,22 @@ async def join(ctx: discord.Interaction, mention: bool):
         
     joch[ctx.guild_id] = ctx.user.voice.channel
     rdch[ctx.guild_id] = ctx.channel.id
+    gque[ctx.guild_id] = asyncio.Queue()
     #print(rdch)
-    vccl[ctx.guild_id] = await joch[ctx.guild_id].connect()
+    try:
+        vccl[ctx.guild_id] = await joch[ctx.guild_id].connect(timeout=60, self_deaf=True, reconnect=True)
+    except Exception as e:
+        await ctx.response.send_message(f'エラーが発生\n{type(e).__name__}:{e}')
+        return
     if mention:
-        await ctx.response.send_message(f'<@&[mention id]> ナラ{ctx.user.display_name}が始めたぞ')
+        await ctx.response.send_message(f'<@&1160612794597650444> ナラ{ctx.user.display_name}が始めたぞ')
     else:
         await ctx.response.send_message(f'ナラ{ctx.user.display_name}が始めたぞ')
 
 # reading
 
 @bot.event
-async def on_message(message):
+async def on_message(message:discord.Message):
     if message.author.bot:
         return
     
@@ -336,27 +392,42 @@ async def on_message(message):
             
             if len(text) > 30:
                 text = f'{text[:30]},以下略'
+            if not text:
+                return
             output = await asyncio.to_thread(amod.gen_voice,888753760, text)
             #print(output)
-            if output == 0:
+            if output[0] == 0:
                 #print('return:success')
-                await amod.play_sound(guild_id,vccl)
+                await amod.play_sound(vccl[guild_id],output[1],gque[guild_id])
             else:
                 #print('return: failed')
                 await message.channel.send(output)
         except Exception as e:
-            await message.channel.send(e)
+            await message.channel.send('error has occured:',e)
+    
+    if "おはよう" in message.content or "こんにちは" in message.content or "おやすみ" in message.content:
+        if "おはよう" in message.content:
+            greet = f"ナラ{message.author.display_name}、おはよう。今日は"
+        elif "こんにちは" in message.content:
+            greet = f"こんにちは、ナラ{message.author.display_name}。今日は"
+        else:
+            greet = f"おやすみ、ナラ{message.author.display_name}。今日は"
+        greet = await amod.generate_text(greet,generator)
+        await message.channel.send(greet)
 
 @bot.event
-async def on_voice_state_update(member,before,after):
+async def on_voice_state_update(member:discord.Member,before,after):
     guild_id = member.guild.id
     if member.bot or guild_id not in joch:
         return
     
     
-    if guild_id in joch:
+    if guild_id in joch and (joch[guild_id] == before.channel or before.channel is None):
+        member_name = member.display_name
+        if len(member_name) > 13:
+            member_name = f'{member_name[:5]},略'
         if(before.channel is None and after.channel is not None):
-            text = f'{member.display_name}が参加しました'
+            text = f'{member_name}が参加しました'
             #print('join')
         elif(before.channel is not None and after.channel is None):
             fumman = [m for m in member.guild.voice_client.channel.members if not m.bot]
@@ -364,10 +435,11 @@ async def on_voice_state_update(member,before,after):
                 del joch[guild_id]
                 del rdch[guild_id]
                 del vccl[guild_id]
+                del gque[guild_id]
                 await member.guild.voice_client.disconnect()
                 return
             else:
-                text = f'{member.display_name}が退出しました'
+                text = f'{member_name}が退出しました'
                 #print('leave')
         elif(before.channel != after.channel):
             fumman = [m for m in member.guild.voice_client.channel.members if not m.bot]
@@ -375,17 +447,18 @@ async def on_voice_state_update(member,before,after):
                 del joch[guild_id]
                 del rdch[guild_id]
                 del vccl[guild_id]
+                del gque[guild_id]
                 await member.guild.voice_client.disconnect()
                 return
             else:
-                text = f'{member.display_name}が退出しました'
+                text = f'{member_name}が退出しました'
                 #print('move')
         try:
             output = await asyncio.to_thread(amod.gen_voice,888753760, text)
             #print(output)
-            if output == 0:
+            if output[0] == 0:
                 #print('return:success')
-                await amod.play_sound(guild_id,vccl)
+                await amod.play_sound(vccl[guild_id],output[1],gque[guild_id])
             else:
                 print('return: failed')
         except Exception as e:
@@ -401,6 +474,7 @@ async def leave(ctx: discord.Interaction):
     del joch[ctx.guild_id]
     del rdch[ctx.guild_id]
     del vccl[ctx.guild_id]
+    del gque[ctx.guild_id]
 
     await vc_client.disconnect()
     await ctx.response.send_message('ばいばい')
