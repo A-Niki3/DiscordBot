@@ -3,9 +3,22 @@ from discord import app_commands as dac
 import os
 from dotenv import load_dotenv
 import asyncio
+import re
+import logging
 
 #user modules
 import Aranma_Modules as amod
+
+# ログ設定
+logging.basicConfig(
+    level=logging.DEBUG,
+    format = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+    #handlers=[
+    #    logging.FileHandler("bot.log",encoding="utf-8"),
+    #    logging.StreamHandler()
+    #]
+)
+logger = logging.getLogger(__name__)
 
 # get env
 load_dotenv()
@@ -22,6 +35,9 @@ myserver_ids = [int(os.getenv("V_SERVER_ID")),int(os.getenv("D_SERVER_ID"))]
 # dev id (niki & kazuki)
 dev_user_id = [int(os.getenv("NIKI_ID")),int(os.getenv("KAZUKI_ID"))]
 
+# gemini api key
+gemini = os.getenv("GEMINI")
+
 # set AI model
 async_loop = asyncio.get_event_loop()
 generator = async_loop.run_until_complete(amod.set_generator())
@@ -37,6 +53,11 @@ rdch = {} # read channel
 joch = {} # join channel
 vccl = {} # VC Client
 gque = {} # guild queue
+keeptask = {} # keepalive
+
+# speakers
+anneli = 888753760
+metan = 2
 
 # failed mesage
 failed = 'このコマンドの実行権限がありません'
@@ -44,7 +65,15 @@ failed = 'このコマンドの実行権限がありません'
 # bot boot
 @bot.event
 async def on_ready():
-    print('アランマbot起動')
+    for vc in bot.voice_clients:
+        try:
+            await vc.disconnect(force=True)
+            logger.info(f'{vc}を削除しました')
+        except Exception as e:
+            logger.error(e)
+    logger.info('削除プロセス終了')
+    
+    logger.info('アランマbot起動')
     activity = '森林の浄化'
     await bot.change_presence(activity = discord.Game(activity))
 
@@ -194,7 +223,7 @@ async def weather(ctx: discord.Interaction, prefecture: str):
         emb.add_field(name=f'{prefecture}の最低気温',value=f'{today_weather[3]}℃だ',inline=True)
         await ctx.response.send_message(embed=emb)
     else:
-        await ctx.response.send_message(f'{prefecture}は無い。誤字、都道府県がついていないか確認するんだ。')
+        await ctx.response.send_message(f'{prefecture}は無い。誤字、都府県がついていないか確認するんだ。')
 
 #------------------------
 #Select choice commands
@@ -254,6 +283,20 @@ async def omikujineo(ctx: discord.Interaction):
     gen_fortune:str = await amod.generate_mikuji(fortune,generator)
     gen_fortune = gen_fortune.replace(f"「{fortune}」",f'「||{fortune}||」')
     emb = discord.Embed(title='アランマの~~よく当たる~~カオスな占い☆',description=f'ナラ{user_name}の今日の運勢を占う',color=discord.Colour.from_rgb(color_list[choice_color][0],color_list[choice_color][1],color_list[choice_color][2]))
+    emb.add_field(name=f'ナラ{user_name}の占い結果',value= gen_fortune)
+    await ctx.followup.send(embed = emb)
+
+# Google Gemini使えるようにしたい
+@tree.command(name='geminikuji',description='新しいAIおみくじだ')
+async def geminikuji(ctx: discord.Interaction):
+    await ctx.response.defer()
+    fortune = amod.get_mikuji()
+    user_name = ctx.user.display_name
+    color_list = [[128,0,128],[25,25,112],[230,230,250],[255,215,0],[192,192,192],[80,200,120],[75,0,130]]
+    choice_color = amod.dice_roll(1,7)[0] - 1
+    gen_fortune:str = amod.geminikuji_gen(user_name,fortune,gemini)
+    gen_fortune = gen_fortune.replace(f"「{fortune}」",f'「||{fortune}||」')
+    emb = discord.Embed(title='アランマのよく当たりそうな占い☆',description=f'ナラ{user_name}の今日の運勢を占う',color=discord.Colour.from_rgb(color_list[choice_color][0],color_list[choice_color][1],color_list[choice_color][2]))
     emb.add_field(name=f'ナラ{user_name}の占い結果',value= gen_fortune)
     await ctx.followup.send(embed = emb)
 
@@ -366,6 +409,8 @@ async def join(ctx: discord.Interaction, mention: bool):
     #print(rdch)
     try:
         vccl[ctx.guild_id] = await joch[ctx.guild_id].connect(timeout=60, self_deaf=True, reconnect=True)
+        #task = asyncio.create_task(amod.keepalive(vccl[ctx.guild_id],gque[ctx.guild_id],120))
+        #keeptask[ctx.guild_id] = task
     except Exception as e:
         await ctx.response.send_message(f'エラーが発生\n{type(e).__name__}:{e}')
         return
@@ -384,17 +429,28 @@ async def on_message(message:discord.Message):
     guild_id = message.guild.id
     ch_id = message.channel.id
     
+    twitterx_pattern = re.compile(r"https?://(?:twitter|x)\.com/\S+")
+    
+    if twitterx_pattern.search(message.content):
+        try:
+            await message.edit(suppress=True)
+            urls = re.findall(twitterx_pattern,message.content)
+            fixurls = [re.sub(r"(?:twitter\.com|x\.com)","fixupx.com",url) for url in urls]
+            await message.channel.send("\n".join(fixurls))
+        except Exception as e:
+            await message.channel.send(f'error:{e}')
+    
     if (guild_id in rdch and ch_id == rdch[guild_id]) and (guild_id in joch):
         #print(message.content)
         #await message.channel.send(message.content)
         try:
             text = amod.replace(message.content)
             
-            if len(text) > 30:
-                text = f'{text[:30]},以下略'
+            if len(text) > 40:
+                text = f'{text[:40]},以下略'
             if not text:
                 return
-            output = await asyncio.to_thread(amod.gen_voice,888753760, text)
+            output = await asyncio.to_thread(amod.gen_voice,metan, text)
             #print(output)
             if output[0] == 0:
                 #print('return:success')
@@ -454,15 +510,15 @@ async def on_voice_state_update(member:discord.Member,before,after):
                 text = f'{member_name}が退出しました'
                 #print('move')
         try:
-            output = await asyncio.to_thread(amod.gen_voice,888753760, text)
+            output = await asyncio.to_thread(amod.gen_voice,metan, text)
             #print(output)
             if output[0] == 0:
                 #print('return:success')
                 await amod.play_sound(vccl[guild_id],output[1],gque[guild_id])
             else:
-                print('return: failed')
+                logger.error('return: failed')
         except Exception as e:
-            print(e)
+            logger.error(e)
 
 @tree.command(name = 'leave',description = 'vcから退出するぞ')
 async def leave(ctx: discord.Interaction):

@@ -11,9 +11,17 @@ import re
 import os
 import uuid
 import emoji
+#import google.generativeai as gemini
+from google import genai as gemini
+from google.genai import types
+import webcolors
+import logging
+
+logger = logging.getLogger(__name__)
 
 bad_words_ids = []
 tokenizer = t5t.from_pretrained("rinna/japanese-gpt2-medium")
+SILENCE_FILE = "silence.wav"
 
 async def set_generator():
     load_bad_words()
@@ -65,9 +73,9 @@ def readcsv():
             for row in reader:
                 ids.append(row['mcids'])
     except FileNotFoundError :
-        print("File is not found")
+        logger.error("File is not found")
     except KeyError:
-        print("\"mcids\" row is not found")
+        logger.error("\"mcids\" row is not found")
 
     return ids
 
@@ -97,20 +105,20 @@ def operatecsv(target:int,permit:bool,info:list[str]):
             try:
                 header = next(reader)
             except StopIteration as e:
-                print(f'error occered:{e}')
+                logger.error(f'error occered:{e}')
                 return
 
             for i,row in enumerate(reader):
                 if i != target -1:
                     update.append(row)
     except FileNotFoundError:
-        print("file is not found")
+        logger.error("file is not found")
         return
     except IndexError:
-        print("Index out of range")
+        logger.error("Index out of range")
         return
     except OSError as ose:
-        print(f"Error:{ose}")
+        logger.error(f"Error:{ose}")
     
     with open('request.csv','w',newline='') as csvfile:
         writer = csv.writer(csvfile)
@@ -179,10 +187,34 @@ async def generate_mikuji(fortune:str,generator):
     gen_text = decode_output(output[0])
     return await asyncio.to_thread(check_text, gen_text)
 
+def geminikuji_gen(user_name: str,fortune: str,api_key: str):
+    client = gemini.Client(api_key=api_key)
+    model = 'gemini-2.5-flash-lite'
+    ruck_color = random.choice(list(webcolors.names()))
+    prompt = (
+        "以下の文章の続きを次の指定に沿って作成する。\n"
+        f"{ruck_color}の部分について日本語名に訳すこと\n"
+        "運勢と色に合わせたアドバイスを2~3文で付け加えること。\n"
+        f'今日の{user_name}の運勢は「{fortune}」だ。ラッキーカラーは、「{ruck_color}」だ。'
+    )
+    response = client.models.generate_content(
+        model = model,
+        contents = prompt,
+        config = types.GenerateContentConfig(
+            temperature=0.5,
+            top_k=50,
+            top_p=0.8
+        )
+    )
+    return response.text.strip()
+
 def replace(content:str):
     # URL
     url_pattern = r"(https?://\S+|www\.\S+)"
     content = re.sub(url_pattern,"URL",content)
+    # title
+    deco_pattern = r"^\s*[-#]+\s*(.*)$"
+    content = re.sub(deco_pattern,r'\1',content,flags=re.MULTILINE)
     # <@&id>
     content = re.sub(r"<@&\d+>","ロール",content)
     # <@id>
@@ -193,8 +225,11 @@ def replace(content:str):
     content = re.sub(r"<#!\d+>","ボイス",content)
     # <:stamp:>
     content = re.sub(r"<a:\w+:\d+>|<:\w+:\d+>","",content)
+    # MD
+    content = re.sub(r"\|\|.*?\|\|","スポイラー",content)
+    content = re.sub(r"```.*?```","コードブロック",content,flags=re.S)
     # 記号
-    symbol_pattern = r"[;:；：'’\"\”`‘*＊｜|ᐡﻌᐧ^£฿₰₣₤฿₣∀Å$€?？]"
+    symbol_pattern = r"[;:；：'’\"\”`‘*＊｜|ᐡﻌᐧ^£฿₰₣₤฿₣∀Å$€?？e]"
     content = re.sub(symbol_pattern,"",content)
     # 絵文字類
     content = emoji.replace_emoji(content,"")
@@ -203,7 +238,8 @@ def replace(content:str):
 def gen_voice(style_id, text):
     try:
         # ベースURL
-        base_url = "http://127.0.0.1:10101"
+        # base_url = "http://127.0.0.1:10101" aivis-engine
+        base_url = "http://127.0.0.1:50021"
 
         # audio_queryリクエスト
         query_response = requests.post(
@@ -214,7 +250,7 @@ def gen_voice(style_id, text):
         )
 
         if query_response.status_code != 200:
-            print("audio_queryリクエスト失敗:", query_response.status_code, query_response.text)
+            logger.error("audio_queryリクエスト失敗:", query_response.status_code, query_response.text)
             return f'audio_queryリクエスト失敗: {query_response.status_code}, {query_response.text}'
 
         # synthesisリクエスト
@@ -230,10 +266,10 @@ def gen_voice(style_id, text):
             file_name = f'{uuid.uuid4()}.wav'
             with open(f'voices/{file_name}', "wb") as f:
                 f.write(synthesis_response.content)
-            print(f"音声ファイルを保存しました: voices/{file_name}")
+            logger.info(f"音声ファイルを保存しました: voices/{file_name}")
             return 0,file_name
         else:
-            print("synthesisリクエスト失敗:", synthesis_response.status_code, synthesis_response.text)
+            logger.error("synthesisリクエスト失敗:", synthesis_response.status_code, synthesis_response.text)
             return 1,f"synthesisリクエスト失敗: {synthesis_response.status_code}, {synthesis_response.text}"
 
     except Exception as e:
@@ -241,7 +277,7 @@ def gen_voice(style_id, text):
 
 async def play_sound(vccl:discord.VoiceClient,file_name:str,queue:asyncio.Queue):
     file_path = os.path.join(os.path.dirname(__file__), 'voices', f'{file_name}')
-    await queue.put(file_path) #ここまではいったんok
+    await queue.put(file_path)
 
     if not vccl.is_playing():
         await handle_queue(vccl,queue)
@@ -256,7 +292,8 @@ async def handle_queue(vccl: discord.VoiceClient, queue: asyncio.Queue):
         while vccl.is_playing():
             await asyncio.sleep(1)
         
-        os.remove(file_path)
+        if file_path != SILENCE_FILE:
+            os.remove(file_path)
 
 async def generate_text(text: str,generator):
     #print(bad_words_ids)
@@ -296,7 +333,7 @@ def load_bad_words():
 def check_text(text:str):
     fillter = r'[@#]\S+|https?://\S+|pic\.twitter\.com/\S+'
     matches = re.findall(fillter,text)
-    print(matches)
+    logger.info(matches)
     text = re.sub(fillter,"",text)
     if matches:
         bads_add_to_json(matches)
