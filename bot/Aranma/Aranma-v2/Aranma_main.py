@@ -144,6 +144,68 @@ async def reboot(ctx: discord.Interaction):
     else:
         await ctx.response.send_message(failed)
 
+@tree.command(name='adddict',description='ユーザー辞書登録をします')
+@dac.describe(word='登録したい単語を入力')
+@dac.describe(pron='カタカナで発音を入力')
+@dac.describe(accent='音が最も下がる位置を半角数字で指定')
+async def add_dict(ctx: discord.Interaction, word: str, pron: str, accent: int):
+    result = amod.add_user_dict(word=word,pron=pron,accent=accent)
+    if result[0] == 0:
+        await ctx.response.send_message(f"単語: {word}を発音: {pron}で登録しました")
+    elif result[1] == "error":
+        await ctx.response.send_message("単語登録中にAPIエラーが発生しました")
+    else:
+        await ctx.response.send_message(f"予期しないエラーが発生しました\n【詳細】\n{result[1]}")
+
+@tree.command(name='searchdict',description='ユーザー辞書を検索します')
+@dac.describe(word='検索する単語を入力')
+async def search_dict(ctx: discord.Interaction, word:str):
+    result = amod.search_dict(word=word)
+    if result != ("None" or "error"):
+        get_dict = amod.get_user_dict()
+        if get_dict[0] == 0:
+            word_data = get_dict[1].get(result)
+            if word_data is not None:
+                surface = word_data.get("surface")
+                pron = word_data.get("pronunciation")
+                accent = word_data.get("accent_type")
+                await ctx.response.send_message(f"検索結果:\n【単語】{surface}\n【発音】{pron}\n【アクセント】{accent}")
+            else:
+                await ctx.response.send_message("JSONの検索に失敗しました")
+        else:
+            await ctx.response.send_message(f"辞書の取得に失敗しました:{get_dict[1]}")
+    else:
+        if result == "None":
+            await ctx.response.send_message("該当する単語はありません")
+        else:
+            await ctx.response.send_message("その他のエラーが発生しました")
+
+@tree.command(name='editdict',description='登録済みの単語を編集します')
+@dac.describe(word='登録した単語を入力')
+@dac.describe(pron='カタカナで発音を入力')
+@dac.describe(accent='音が最も下がる位置を半角数字で指定')
+async def edit_dict(ctx: discord.Interaction, word: str, pron: str, accent: int):
+    result = amod.edit_user_dict(word=word,pron=pron,accent=accent)
+    if result == "success":
+        await ctx.response.send_message(f"{word}を発音: {pron}、アクセント: {accent}に変更しました")
+    elif result == "not found":
+        await ctx.response.send_message(f"{word}は見つかりませんでした```/searchdict {word}```を試してください")
+    else:
+        await ctx.response.send_message(f"その他のエラーが発生しました:{result}")
+
+@tree.command(name='deletedict',description='登録済みの単語を削除します')
+@dac.describe(word='登録した単語を入力')
+async def delete_dict(ctx: discord.Interaction, word: str):
+    result = amod.delete_user_dict(word=word)
+    if result == "success":
+        await ctx.response.send_message(f"{word}を削除しました")
+    elif result == "not found":
+        await ctx.response.send_message(f"{word}は見つかりませんでした```/searchdict {word}```を試してください")
+    else:
+        await ctx.response.send_message(f"その他のエラーが発生しました:{result}")
+
+
+
 #----------------
 #Embed commands
 #----------------
@@ -286,7 +348,7 @@ async def omikujineo(ctx: discord.Interaction):
     emb.add_field(name=f'ナラ{user_name}の占い結果',value= gen_fortune)
     await ctx.followup.send(embed = emb)
 
-# Google Gemini使えるようにしたい
+# Google Gemini
 @tree.command(name='geminikuji',description='新しいAIおみくじだ')
 async def geminikuji(ctx: discord.Interaction):
     await ctx.response.defer()
@@ -399,7 +461,7 @@ async def delvoices(ctx: discord.Interaction):
 #voice commands
 #---------------
 @tree.command(name = 'join',description = '使用者のいるvcに参加するぞ')
-async def join(ctx: discord.Interaction, mention: bool):
+async def join(ctx: discord.Interaction):
     if ctx.user.voice is None or ctx.user.voice.channel is None:
         await ctx.response.send_message(f'ナラ{ctx.user.display_name}、まずvcに参加するんだ')
         
@@ -414,10 +476,7 @@ async def join(ctx: discord.Interaction, mention: bool):
     except Exception as e:
         await ctx.response.send_message(f'エラーが発生\n{type(e).__name__}:{e}')
         return
-    if mention:
-        await ctx.response.send_message(f'<@&1160612794597650444> ナラ{ctx.user.display_name}が始めたぞ')
-    else:
-        await ctx.response.send_message(f'ナラ{ctx.user.display_name}が始めたぞ')
+    await ctx.response.send_message(f'ナラ{ctx.user.display_name}が始めたぞ')
 
 # reading
 

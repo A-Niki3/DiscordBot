@@ -23,6 +23,10 @@ bad_words_ids = []
 tokenizer = t5t.from_pretrained("rinna/japanese-gpt2-medium")
 SILENCE_FILE = "silence.wav"
 
+# ベースURL
+# base_url = "http://127.0.0.1:10101" aivis-engine
+BASE_URL = "http://127.0.0.1:50021"
+
 async def set_generator():
     load_bad_words()
     #print(bad_words_ids)
@@ -192,10 +196,13 @@ def geminikuji_gen(user_name: str,fortune: str,api_key: str):
     model = 'gemini-2.5-flash-lite'
     ruck_color = random.choice(list(webcolors.names()))
     prompt = (
-        "以下の文章の続きを次の指定に沿って作成する。\n"
-        f"{ruck_color}の部分について日本語名に訳すこと\n"
-        "運勢と色に合わせたアドバイスを2~3文で付け加えること。\n"
-        f'今日の{user_name}の運勢は「{fortune}」だ。ラッキーカラーは、「{ruck_color}」だ。'
+        "以下の指示、フォーマットに従って出力すること\n"
+        "1.MarkDown記法を使用してはいけない\n"
+        f"2.{ruck_color}は日本語名に置き換えること\n"
+        f"3.{ruck_color}の翻訳前の表示や色に関する解説はしないこと\n"
+        "4.色と運勢に合わせたアドバイスを3文でまとめること"
+        "以上の4点を遵守した上で、次に示す文とその続きだけを出力すること"
+        f"今日の{user_name}の運勢は「{fortune}」だ。ラッキーカラーは、「{ruck_color}」だ。"
     )
     response = client.models.generate_content(
         model = model,
@@ -237,16 +244,16 @@ def replace(content:str):
 
 def gen_voice(style_id, text):
     try:
-        # ベースURL
-        # base_url = "http://127.0.0.1:10101" aivis-engine
-        base_url = "http://127.0.0.1:50021"
+        
 
         # audio_queryリクエスト
         query_response = requests.post(
-            f"{base_url}/audio_query",
+            f"{BASE_URL}/audio_query",
             #json={},
-            params={"speaker": style_id,
-                    "text": text}
+            params={
+                    "speaker": style_id,
+                    "text": text
+                    }
         )
 
         if query_response.status_code != 200:
@@ -255,7 +262,7 @@ def gen_voice(style_id, text):
 
         # synthesisリクエスト
         synthesis_response = requests.post(
-            f"{base_url}/synthesis",
+            f"{BASE_URL}/synthesis",
             params={"speaker": style_id},
             headers={"Content-Type": "application/json"},
             data=query_response.content
@@ -281,6 +288,105 @@ async def play_sound(vccl:discord.VoiceClient,file_name:str,queue:asyncio.Queue)
 
     if not vccl.is_playing():
         await handle_queue(vccl,queue)
+
+def get_user_dict():
+    try:
+        # ユーザー辞書取得
+        get_user_dict_response = requests.get(
+            f"{BASE_URL}/user_dict",
+            headers={"Content-Type": "application/json"}
+        )
+        if get_user_dict_response.status_code == 200:
+            logger.info("ユーザー辞書を取得しました")
+            return 0,get_user_dict_response.json()
+        else:
+            logger.error("ユーザー辞書の取得に失敗しました")
+            return 1,"error"
+    except Exception as e:
+        return 1,e
+
+def search_dict(word: str):
+    user_dict = get_user_dict()
+    if user_dict[0] != 0:
+        return user_dict[1]
+    for uuid, data in user_dict[1].items():
+        if data.get("surface") == word:
+            return uuid
+    return "None"
+
+def add_user_dict(word: str, pron: str, accent:int):
+    try:
+        search_result = search_dict(word=word)
+        if search_result != "None":
+            if search_result == "error":
+                return 1,search_result
+            else:
+                return 2,"既に登録済みのワードです"
+        # ユーザー辞書登録
+        add_user_dict_response = requests.post(
+            f"{BASE_URL}/user_dict_word",
+            params={
+                "surface": word,
+                "pronunciation": pron,
+                "accent_type": accent,
+                "priority": 10
+            },
+            headers={"Content-Type": "application/json"}
+        )
+        if add_user_dict_response.status_code == 200:
+            logger.info(f"ユーザー辞書に{word}を追加しました")
+            return 0,"success"
+        else:
+            logger.info("ユーザー辞書登録時にエラーが発生しました")
+            return 1,"error"
+    except Exception as e:
+        return 1,e
+
+def edit_user_dict(word:str, pron: str, accent: int):
+    try:
+        user_dict = search_dict(word=word)
+        if user_dict != ("None" or "error"):
+            # ユーザー辞書変更
+            edit_user_dict_response = requests.put(
+                f"{BASE_URL}/user_dict_word/{user_dict}",
+                params={
+                    "surface": word,
+                    "pronunciation": pron,
+                    "accent_type": accent
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            if edit_user_dict_response.status_code == 204:
+                logger.info("辞書情報を更新しました")
+                return "success"
+            elif user_dict == "None":
+                logger.error("辞書に該当するワードが見つかりません")
+                return "not found"
+            else:
+                logger.error("APIエラー")
+                return user_dict
+    except Exception as e:
+        return e
+
+def delete_user_dict(word:str):
+    try:
+        user_dict = search_dict(word=word)
+        if user_dict != ("None" or "error"):
+            delete_user_dict_response = requests.delete(
+                f"{BASE_URL}/user_dict_word/{user_dict}",
+                headers={"Content-Type": "application/json"}
+            )
+            if delete_user_dict_response.status_code == 204:
+                logger.info(f"{word}を削除しました")
+                return "success"
+            elif user_dict == "None":
+                logger.error("辞書に該当するワードが見つかりません")
+                return "not found"
+            else:
+                logger.error("APIエラー")
+                return user_dict
+    except Exception as e:
+        return e
 
 async def handle_queue(vccl: discord.VoiceClient, queue: asyncio.Queue):
     while not queue.empty():
